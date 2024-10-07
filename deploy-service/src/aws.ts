@@ -25,46 +25,50 @@ export const downloadS3Folder = async (folderPath: string) => {
         const bucketName = 'gist-deploy'; 
         const command = new ListObjectsV2Command({
             Bucket: bucketName,
-            Prefix: folderPath, // Specify the folder path
+            Prefix: folderPath, 
         });
 
         const response = await s3.send(command);
 
-        if (response.Contents) {
-            const localDirectory = path.join(__dirname, folderPath);
-            fs.mkdirSync(localDirectory, { recursive: true });
+        // Check if any objects were found
+if (response.Contents) {
+    console.log("Found objects:", response.Contents); // Log found objects
 
-            for (const object of response.Contents) {
-                if (object.Key) {
-                    const fileName = path.basename(object.Key);
-                    const localFilePath = path.join(localDirectory, fileName); // Local file path
-                    const getObjectCommand = new GetObjectCommand({
-                        Bucket: bucketName,
-                        Key: object.Key,
-                    });
+    const localDirectory = path.join(__dirname, folderPath);
+    fs.mkdirSync(localDirectory, { recursive: true });
 
-                    const fileStream = await s3.send(getObjectCommand);
+    for (const object of response.Contents) {
+        if (object.Key) {
+            const fileName = path.basename(object.Key);
+            const localFilePath = path.join(localDirectory, fileName);
+            const getObjectCommand = new GetObjectCommand({
+                Bucket: bucketName,
+                Key: object.Key,
+            });
 
-                    if (fileStream.Body && fileStream.Body instanceof Readable) {
-                        const writeStream = fs.createWriteStream(localFilePath);
+            const fileStream = await s3.send(getObjectCommand);
 
-                        fileStream.Body.pipe(writeStream);
+            if (fileStream.Body && fileStream.Body instanceof Readable) {
+                const writeStream = fs.createWriteStream(localFilePath);
 
-                        writeStream.on('finish', () => {
-                            console.log(`Downloaded: ${fileName}`);
-                        });
+                fileStream.Body.pipe(writeStream);
 
-                        writeStream.on('error', (err) => {
-                            console.error(`Error writing file ${fileName}:`, err);
-                        });
-                    } else {
-                        console.error(`No body found for ${object.Key}`);
-                    }
-                }
+                writeStream.on('finish', () => {
+                    console.log(`Downloaded: ${fileName}`);
+                });
+
+                writeStream.on('error', (err) => {
+                    console.error(`Error writing file ${fileName}:`, err);
+                });
+            } else {
+                console.error(`No body found for ${object.Key}`);
             }
-        } else {
-            console.log('No files found in the specified S3 folder.');
         }
+    }
+} else {
+    console.log('No files found in the specified S3 folder.');
+}
+
     } catch (error) {
         console.error('Error downloading S3 folder:', error);
         throw new Error(`Download failed for folder ${folderPath}`);
