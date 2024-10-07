@@ -31,7 +31,7 @@ const uploadFile = async (id, fileName, localFilePath) => {
         const command = new client_s3_1.PutObjectCommand(uploadParams);
         const response = await s3.send(command);
         console.log(`File uploaded successfully: ${uploadParams.Key}`); // Log success message
-        console.log('Response:', response); // Optionally log the full response
+        console.log('Response:', response); //
     }
     catch (error) {
         console.error("Error uploading file:", error);
