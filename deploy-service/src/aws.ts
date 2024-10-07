@@ -1,16 +1,16 @@
-import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import path from 'path';
-import { Readable } from 'stream'; 
 import dotenv from 'dotenv';
+import { pipeline } from 'stream';
+import { promisify } from 'util';
 
-dotenv.config(); 
+dotenv.config();
 
-const { AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION } = process.env;
-
-if (!AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY || !AWS_REGION) {
-    throw new Error("AWS credentials and region must be set in environment variables.");
-}
+const AWS_REGION = process.env.AWS_REGION!;
+const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID!;
+const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY!;
+const S3_BUCKET = process.env.S3_BUCKET!;
 
 const s3 = new S3Client({
     region: AWS_REGION,
@@ -20,57 +20,97 @@ const s3 = new S3Client({
     },
 });
 
-export const downloadS3Folder = async (folderPath: string) => {
+const pipe = promisify(pipeline);
+
+// Function to download an S3 folder
+export const downloadS3Folder = async (prefix: string) => {
+    const listParams = {
+        Bucket: S3_BUCKET,
+        Prefix: prefix,
+    };
+
     try {
-        const bucketName = 'gist-deploy'; 
-        const command = new ListObjectsV2Command({
-            Bucket: bucketName,
-            Prefix: folderPath, 
+        const data = await s3.send(new ListObjectsV2Command(listParams));
+        if (!data.Contents) {
+            console.log("No files found to download.");
+            return;
+        }
+
+        const downloadPromises = data.Contents.map(async (item) => {
+            if (!item.Key) return;
+
+            const getObjectParams = {
+                Bucket: S3_BUCKET,
+                Key: item.Key,
+            };
+
+            const outputFilePath = path.join(__dirname, item.Key);
+            const dirName = path.dirname(outputFilePath);
+            if (!fs.existsSync(dirName)) {
+                fs.mkdirSync(dirName, { recursive: true });
+            }
+
+            const response = await s3.send(new GetObjectCommand(getObjectParams));
+            const stream = response.Body as NodeJS.ReadableStream;
+
+            await pipe(stream, fs.createWriteStream(outputFilePath));
+            console.log(`File downloaded: ${item.Key}`);
         });
 
+        await Promise.all(downloadPromises);
+        console.log("All files downloaded successfully.");
+    } catch (error) {
+        console.error("Error downloading files from S3:", error);
+        throw new Error("Download failed.");
+    }
+};
+
+// Function to upload files from a local directory to S3
+export const uploadFile = async (id: string, fileName: string, localFilePath: string) => {
+    const fileContent = fs.readFileSync(localFilePath);
+
+    const uploadParams = {
+        Bucket: S3_BUCKET,
+        Key: `output/${id}/${fileName}`,
+        Body: fileContent,
+    };
+
+    console.log(`Uploading ${uploadParams.Key} to S3...`);
+
+    try {
+        const command = new PutObjectCommand(uploadParams);
         const response = await s3.send(command);
 
-        // Check if any objects were found
-if (response.Contents) {
-    console.log("Found objects:", response.Contents); // Log found objects
-
-    const localDirectory = path.join(__dirname, folderPath);
-    fs.mkdirSync(localDirectory, { recursive: true });
-
-    for (const object of response.Contents) {
-        if (object.Key) {
-            const fileName = path.basename(object.Key);
-            const localFilePath = path.join(localDirectory, fileName);
-            const getObjectCommand = new GetObjectCommand({
-                Bucket: bucketName,
-                Key: object.Key,
-            });
-
-            const fileStream = await s3.send(getObjectCommand);
-
-            if (fileStream.Body && fileStream.Body instanceof Readable) {
-                const writeStream = fs.createWriteStream(localFilePath);
-
-                fileStream.Body.pipe(writeStream);
-
-                writeStream.on('finish', () => {
-                    console.log(`Downloaded: ${fileName}`);
-                });
-
-                writeStream.on('error', (err) => {
-                    console.error(`Error writing file ${fileName}:`, err);
-                });
-            } else {
-                console.error(`No body found for ${object.Key}`);
-            }
-        }
-    }
-} else {
-    console.log('No files found in the specified S3 folder.');
-}
-
+        console.log(`File uploaded successfully: ${uploadParams.Key}`);
+        console.log('Response:', response);
     } catch (error) {
-        console.error('Error downloading S3 folder:', error);
-        throw new Error(`Download failed for folder ${folderPath}`);
+        console.error("Error uploading file:", error);
+        throw new Error(`File upload failed for ${uploadParams.Key}`);
     }
+};
+
+// Function to recursively get all files from a local folder
+const getAllFiles = (folderPath: string): string[] => {
+    let response: string[] = [];
+
+    const allFilesAndFolders = fs.readdirSync(folderPath);
+    allFilesAndFolders.forEach(file => {
+        const fullFilePath = path.join(folderPath, file);
+        if (fs.statSync(fullFilePath).isDirectory()) {
+            response = response.concat(getAllFiles(fullFilePath));
+        } else {
+            response.push(fullFilePath);
+        }
+    });
+
+    return response;
+};
+
+export const copyFinalDist = (id: string) => {
+    const folderPath = path.join(__dirname, `output/${id}/dist`);
+    const allFiles = getAllFiles(folderPath);
+    allFiles.forEach(file => {
+        const fileName = file.slice(folderPath.length + 1); // get relative path for the file
+        uploadFile(id, fileName, file);
+    });
 };
